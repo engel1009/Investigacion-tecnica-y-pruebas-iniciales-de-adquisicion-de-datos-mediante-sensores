@@ -1,0 +1,124 @@
+
+#include <Arduino.h>
+
+HardwareSerial RS485(1);
+
+// Pines ESP32-C3
+#define RX_PIN 20
+#define TX_PIN 21
+
+// Configuración del sensor
+#define SENSOR_ID 1
+#define BAUD_RATE 9600
+
+// Calcular CRC Modbus RTU
+uint16_t calcularCRC(uint8_t *datos, int longitud) {
+  uint16_t crc = 0xFFFF;
+
+  for (int i = 0; i < longitud; i++) {
+    crc ^= datos[i];
+
+    for (int j = 0; j < 8; j++) {
+      if (crc & 0x0001) {
+        crc = (crc >> 1) ^ 0xA001;
+      } else {
+        crc >>= 1;
+      }
+    }
+  }
+
+  return crc;
+}
+
+void leerSensor() {
+
+  // Solicitud Modbus:
+  // ID 1, función 03
+  // Registro inicial 0x0000
+  // Leer 2 registros
+  uint8_t solicitud[8] = {
+    SENSOR_ID, 0x03,
+    0x00, 0x00,
+    0x00, 0x02,
+    0x00, 0x00
+  };
+
+  uint16_t crc = calcularCRC(solicitud, 6);
+
+  solicitud[6] = crc & 0xFF;
+  solicitud[7] = (crc >> 8) & 0xFF;
+
+  // Limpiar datos anteriores
+  while (RS485.available()) {
+    RS485.read();
+  }
+
+  // Enviar solicitud
+  RS485.write(solicitud, 8);
+  RS485.flush();
+
+  uint8_t respuesta[9];
+  int recibidos = 0;
+
+  unsigned long inicio = millis();
+
+  while (recibidos < 9 && millis() - inicio < 1000) {
+    if (RS485.available()) {
+      respuesta[recibidos++] = RS485.read();
+    }
+  }
+
+  if (recibidos != 9) {
+    Serial.println("Error: sensor no responde");
+    return;
+  }
+
+  // Verificar respuesta Modbus
+  uint16_t crcRespuesta = calcularCRC(respuesta, 7);
+  uint16_t crcRecibido =
+    respuesta[7] | (respuesta[8] << 8);
+
+  if (respuesta[0] != SENSOR_ID ||
+      respuesta[1] != 0x03 ||
+      respuesta[2] != 0x04 ||
+      crcRespuesta != crcRecibido) {
+    Serial.println("Error de comunicacion Modbus");
+    return;
+  }
+
+  // Registro 0: temperatura
+  // Registro 1: humedad
+  int16_t tempRaw =
+    (respuesta[3] << 8) | respuesta[4];
+
+  uint16_t humRaw =
+    (respuesta[5] << 8) | respuesta[6];
+
+  float temperatura = tempRaw / 10.0;
+  float humedad = humRaw / 10.0;
+
+  Serial.print("Temperatura_C: ");
+  Serial.print(temperatura, 1);
+
+  Serial.print(" | Humedad_pct: ");
+  Serial.println(humedad, 1);
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  RS485.begin(
+    BAUD_RATE,
+    SERIAL_8N1,
+    RX_PIN,
+    TX_PIN
+  );
+
+  Serial.println("Iniciando sensor RS485...");
+}
+
+void loop() {
+  leerSensor();
+  delay(1000);
+}
